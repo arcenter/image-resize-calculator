@@ -2,85 +2,186 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Resize Calculator</title>
+  <title>Image Splitter</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 2rem;
-    }
-    input[type="number"], input[type="file"] {
-      margin-bottom: 1rem;
-      display: block;
-    }
-    #output {
-      margin-top: 1rem;
-      white-space: pre-wrap;
-      background: #f0f0f0;
-      padding: 1rem;
-      border-radius: 8px;
-    }
+    body { font-family: sans-serif; text-align: center; padding: 20px; }
+    canvas { border: 1px solid black; cursor: crosshair; }
+    .output img { margin: 5px; border: 1px solid #ccc; }
+    #downloadZip { margin-top: 20px; padding: 10px 20px; font-size: 16px; }
+    #finalWidthInput { padding: 5px; }
   </style>
 </head>
 <body>
+  <h2>Image Splitter</h2>
+  <input type="file" id="upload" accept="image/*"><br><br>
+  <input type="number" id="finalWidthInput" placeholder="Enter final width" style="padding: 5px;">
+  <div id="calculatedWidths"></div>
+  <br><br>
+  <canvas id="canvas"></canvas>
+  <div class="output" id="output"></div>
+  <button id="downloadZip" style="display:none;">Download All as ZIP</button>
 
-<h2>Resize Width Calculator</h2>
-<input type="file" id="fileInput" multiple>
-<input type="number" id="finalWidth" placeholder="Enter final width">
-<button onclick="calculate()">Calculate</button>
+  <script>
+    const upload = document.getElementById('upload');
+    const finalWidthInput = document.getElementById('finalWidthInput');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const output = document.getElementById('output');
+    const downloadZipBtn = document.getElementById('downloadZip');
+    const calculatedWidths = document.getElementById('calculatedWidths');
 
-<div id="output"></div>
+    let img = new Image();
+    let isDrawing = false;
+    let startX, startY, endX, endY;
+    let zipImages = [];
 
-<script>
-    function calculate() {
-      const files = document.getElementById('fileInput').files;
-      const finalWidth = parseFloat(document.getElementById('finalWidth').value);
-      const outputDiv = document.getElementById('output');
-    
-      if (!files.length || isNaN(finalWidth)) {
-        outputDiv.textContent = "Please select image files and enter a valid final width.";
-        return;
-      }
-    
-      const widths = [];
-    
-      const loadImageWidth = (file) => {
-        return new Promise((resolve) => {
-          const img = new Image();
-          const url = URL.createObjectURL(file);
-    
+    let leftWidth = 0.0;
+    let middleWidth = 0.0;
+    let rightWidth = 0.0;
+
+    upload.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = () => {
           img.onload = () => {
-            const width = img.naturalWidth;
-            if (!widths.includes(width)) {
-              widths.push(width);
-            }
-            URL.revokeObjectURL(url);
-            resolve();
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
           };
-    
-          img.onerror = () => {
-            URL.revokeObjectURL(url);
-            resolve(); // Skip broken image
-          };
-    
-          img.src = url;
-        });
-      };
-    
-      const promises = Array.from(files).map(loadImageWidth);
-    
-      Promise.all(promises).then(() => {
-        if (widths.length === 0) {
-          outputDiv.textContent = "No valid image dimensions found.";
-          return;
-        }
-    
-        const total = widths.reduce((a, b) => a + b, 0);
-        const resized = widths.map(w => +(w / total * finalWidth).toFixed(0));
-    
-        outputDiv.textContent = resized.join('\n');
-      });
-    }
-    </script>
+          img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+      }
+    });
 
+    canvas.addEventListener('mousedown', e => {
+      const rect = canvas.getBoundingClientRect();
+      startX = e.clientX - rect.left;
+      startY = e.clientY - rect.top;
+      isDrawing = true;
+    });
+
+    canvas.addEventListener('mouseup', e => {
+      const rect = canvas.getBoundingClientRect();
+      endX = e.clientX - rect.left;
+      endY = e.clientY - rect.top;
+      isDrawing = false;
+      drawSelection();
+      splitImage();
+    });
+
+    canvas.addEventListener('mousemove', e => {
+      if (!isDrawing) return;
+      const rect = canvas.getBoundingClientRect();
+      const currentX = e.clientX - rect.left;
+      const currentY = e.clientY - rect.top;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      const width = currentX - startX;
+      const height = currentY - startY;
+      ctx.strokeStyle = 'red';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(startX, startY, width, height);
+    });
+
+    finalWidthInput.addEventListener('input', () => {
+      updateSplitValues();
+    });
+
+    function drawSelection() {
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      ctx.strokeStyle = 'red';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(startX, startY, endX - startX, endY - startY);
+    }
+
+    function cropImageToDataURL(sx, sy, sw, sh) {
+
+      const tmpCanvas = document.createElement('canvas');
+      tmpCanvas.width = sw;
+      tmpCanvas.height = sh;
+      const tmpCtx = tmpCanvas.getContext('2d');
+      tmpCtx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+      return tmpCanvas.toDataURL('image/png');
+    }
+
+    function updateSplitValues() {
+        const finalWidth = parseInt(finalWidthInput.value);
+        if (!isNaN(finalWidth)) {
+            const columnWidths = [leftWidth, middleWidth, rightWidth]
+            const totalOriginalWidth = columnWidths.reduce((a, b) => a + b, 0);
+            const newWidths = columnWidths.map(width => Math.round((width / totalOriginalWidth) * finalWidth));
+
+
+            calculatedWidths.innerHTML = `
+            <p>Final Width: ${finalWidth}</p>
+            <p>Calculated Column Widths:</p>
+            <ul>
+                <li>r2c1: ${newWidths[0]}</li>
+                <li>r2c2: ${newWidths[1]}</li>
+                <li>r2c3: ${newWidths[2]}</li>
+            </ul>
+            `;
+        }
+    }
+    
+    function splitImage() {
+      output.innerHTML = '';
+      zipImages = [];
+      downloadZipBtn.style.display = 'none';
+
+      const [x1, y1] = [Math.min(startX, endX), Math.min(startY, endY)];
+      const [x2, y2] = [Math.max(startX, endX), Math.max(startY, endY)];
+
+      const topHeight = y1;
+      const middleHeight = y2 - y1;
+      const bottomHeight = canvas.height - y2;
+
+      leftWidth = x1;
+      middleWidth = x2 - x1;
+      rightWidth = canvas.width - x2;
+
+      updateSplitValues();
+
+      const parts = [
+        { name: 'r1.png', x: 0, y: 0, w: canvas.width, h: topHeight },
+        { name: 'r2c1.png', x: 0, y: y1, w: leftWidth, h: middleHeight },
+        { name: 'r2c2.png', x: x1, y: y1, w: middleWidth, h: middleHeight },
+        { name: 'r2c3.png', x: x2, y: y1, w: rightWidth, h: middleHeight },
+        { name: 'r3.png', x: 0, y: y2, w: canvas.width, h: bottomHeight }
+      ];
+
+      parts.forEach(part => {
+        const dataUrl = cropImageToDataURL(part.x, part.y, part.w, part.h);
+        zipImages.push({ name: part.name, data: dataUrl });
+
+        const imgEl = document.createElement('img');
+        imgEl.src = dataUrl;
+        imgEl.style.maxWidth = '100px';
+        output.appendChild(imgEl);
+      });
+
+      downloadZipBtn.style.display = 'inline-block';
+    }
+
+    downloadZipBtn.addEventListener('click', () => {
+      const zip = new JSZip();
+      zipImages.forEach(({ name, data }) => {
+        const base64 = data.split(',')[1];
+        zip.file(name, base64, { base64: true });
+      });
+
+      zip.generateAsync({ type: 'blob' }).then(content => {
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(content);
+        link.download = 'image_splits.zip';
+        link.click();
+      });
+    });
+  </script>
 </body>
 </html>
