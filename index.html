@@ -1,228 +1,234 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Image Splitter with ZIP Download</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <style>
-    body { font-family: sans-serif; text-align: center; padding: 20px; }
-    canvas { border: 1px solid black; cursor: crosshair; }
-    .output img { margin: 5px; border: 1px solid #ccc; }
-    #downloadZip { margin-top: 20px; padding: 10px 20px; font-size: 16px; }
-    #finalWidthInput { padding: 5px; }
-  </style>
+	<meta charset="UTF-8">
+	<title>Image Splitter</title>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+	<style>
+		body { font-family: sans-serif; text-align: center; padding: 20px; }
+		canvas { border: 1px solid black; cursor: crosshair; }
+		#output img { max-width: 100px; margin: 5px; border: 1px solid #ccc; }
+	</style>
 </head>
 <body>
-  <h2>Image Splitter</h2>
-  <input type="file" id="upload" accept="image/*"><br><br>
-  <canvas id="canvas"></canvas>
-  <br><br>
-  <input type="number" id="finalWidthInput" placeholder="Enter final width" style="padding: 5px;">
-  <div id="calculatedWidths"></div> <!-- Output area for showing final widths -->
-  <br><br>
-  <div class="output" id="output"></div>
-  <button id="downloadZip" style="display:none;">Download All as ZIP</button>
+	<h2>Image Splitter</h2>
+	<input type="file" id="upload" accept="image/*"><br><br>
+	<canvas id="canvas"></canvas>
+	<br><br>
+	<label for="scaleWidth">Final Width:</label>
+	<input type="number" id="scaleWidth" placeholder="e.g. 600">
+	<button onclick="updateAllProportions()">Update Proportions</button>
+	<div id="proportionalOutput"></div>
+	<br><br>
+	<div>
+		<button id="downloadZip">Download ZIP</button>
+	</div>
+	<div id="output"></div>
 
-  <script>
-    const upload = document.getElementById('upload');
-    const finalWidthInput = document.getElementById('finalWidthInput');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    const output = document.getElementById('output');
-    const downloadZipBtn = document.getElementById('downloadZip');
-    const calculatedWidths = document.getElementById('calculatedWidths');
+	<script>
+		const canvas = document.getElementById('canvas');
+		const ctx = canvas.getContext('2d');
+		const upload = document.getElementById('upload');
+		const downloadZipBtn = document.getElementById('downloadZip');
+		const output = document.getElementById('output');
 
-    let img = new Image();
-    let isDrawing = false;
-    let startX, startY, endX, endY;
-    let zipImages = []; // Array of {name, data}
+		let img = new Image();
+		let horizontalSplits = [];
+		let verticalSplitsByZone = {};
+		let splitHistory = [];
+		let mode = 'H';
 
-    let leftWidth = 0.0;
-    let middleWidth = 0.0;
-    let rightWidth = 0.0;
+		upload.addEventListener('change', e => {
+			const file = e.target.files[0];
+			if (file) {
+				const reader = new FileReader();
+				reader.onload = () => {
+					img.onload = () => {
+						canvas.width = img.width;
+						canvas.height = img.height;
+						horizontalSplits = [];
+						verticalSplitsByZone = {};
+						drawImage();
+					};
+					img.src = reader.result;
+				};
+				reader.readAsDataURL(file);
+			}
+		});
 
-    upload.addEventListener('change', e => {
-      const file = e.target.files[0];
-      if (file) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          img.onload = () => {
-            canvas.width = img.width;
-            canvas.height = img.height;
-            ctx.drawImage(img, 0, 0);  // Draw the initial image
-          };
-          img.src = reader.result;
-        };
-        reader.readAsDataURL(file);
-      }
-    });
+		function drawImage() {
+			ctx.clearRect(0, 0, canvas.width, canvas.height);
+			ctx.drawImage(img, 0, 0);
+			ctx.strokeStyle = 'red';
+			ctx.lineWidth = 2;
+			horizontalSplits.forEach(y => {
+				ctx.beginPath();
+				ctx.moveTo(0, y);
+				ctx.lineTo(canvas.width, y);
+				ctx.stroke();
+			});
+			const yLines = [0, ...horizontalSplits, canvas.height];
+			for (let i = 0; i < yLines.length - 1; i++) {
+				const top = yLines[i];
+				const bottom = yLines[i + 1];
+				const key = `${top}_${bottom}`;
+				const xLines = verticalSplitsByZone[key] || [];
+				xLines.forEach(x => {
+					ctx.beginPath();
+					ctx.moveTo(x, top);
+					ctx.lineTo(x, bottom);
+					ctx.stroke();
+				});
+			}
+		}
 
-    canvas.addEventListener('mousedown', e => {
-      const rect = canvas.getBoundingClientRect();
-      startX = e.clientX - rect.left;
-      startY = e.clientY - rect.top;
-      isDrawing = true;
-    });
+		canvas.addEventListener('click', e => {
+			const rect = canvas.getBoundingClientRect();
+			const x = e.clientX - rect.left;
+			const y = e.clientY - rect.top;
 
-    canvas.addEventListener('mouseup', e => {
-      const rect = canvas.getBoundingClientRect();
-      endX = e.clientX - rect.left;
-      endY = e.clientY - rect.top;
-      isDrawing = false;
-      drawSelection();  // Just for user feedback (draw the red box)
-      splitImage();     // Split the image based on the selection
-    });
+			if (mode === 'H') {
+				horizontalSplits.push(y);
+				horizontalSplits.sort((a, b) => a - b);
+				splitHistory.push({ type: 'horizontal', value: y });
+			} else if (mode === 'V') {
+				const yLines = [0, ...horizontalSplits, canvas.height];
+				for (let i = 0; i < yLines.length - 1; i++) {
+					if (y >= yLines[i] && y <= yLines[i + 1]) {
+						const key = `${yLines[i]}_${yLines[i + 1]}`;
+						verticalSplitsByZone[key] = verticalSplitsByZone[key] || [];
+						verticalSplitsByZone[key].push(x);
+						verticalSplitsByZone[key].sort((a, b) => a - b);
+						splitHistory.push({ type: 'vertical', value: x, key: key });
+						break;
+					}
+				}
+			}
+			drawImage();
+		});
 
-    canvas.addEventListener('mousemove', e => {
-      if (!isDrawing) return;
-      const rect = canvas.getBoundingClientRect();
-      const currentX = e.clientX - rect.left;
-      const currentY = e.clientY - rect.top;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);  // Clear the canvas before redrawing the image
-      ctx.drawImage(img, 0, 0);  // Draw the image again to keep it intact
-      const width = currentX - startX;
-      const height = currentY - startY;
-      ctx.strokeStyle = 'red';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(startX, startY, width, height);  // Draw the selection box
-    });
+		document.addEventListener('keydown', e => {
+			if (e.key.toUpperCase() === 'H') mode = 'H';
+			if (e.key.toUpperCase() === 'V') mode = 'V';
 
-    finalWidthInput.addEventListener('input', () => {
-      updateSplitValues();
-    });
+			if (e.ctrlKey && e.key === 'z') {
+					const last = splitHistory.pop();
+					if (!last) return;
+	
+					if (last.type === 'horizontal') {
+					const index = horizontalSplits.indexOf(last.value);
+					if (index !== -1) horizontalSplits.splice(index, 1);
+					} else if (last.type === 'vertical') {
+					const arr = verticalSplitsByZone[last.key];
+					if (arr) {
+							const index = arr.indexOf(last.value);
+							if (index !== -1) arr.splice(index, 1);
+							if (arr.length === 0) delete verticalSplitsByZone[last.key];
+					}
+					}
+	
+					drawImage();				 
+					updateAllProportions(); 
+			}
+		});
 
-    function drawSelection() {
-      // Clear the canvas before redrawing the box on top of the image
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0);  // Draw the image again
-      ctx.strokeStyle = 'red';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(startX, startY, endX - startX, endY - startY);  // Draw the box for user feedback
-    }
+		function cropImageToDataURL(sx, sy, sw, sh) {
+			const tmpCanvas = document.createElement('canvas');
+			tmpCanvas.width = sw;
+			tmpCanvas.height = sh;
+			const tmpCtx = tmpCanvas.getContext('2d');
+			tmpCtx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+			return tmpCanvas.toDataURL('image/png');
+		}
 
-    function cropImageToDataURL(sx, sy, sw, sh) {
-      // Create a temporary canvas to crop the image without the selection box
-      const tmpCanvas = document.createElement('canvas');
-      tmpCanvas.width = sw;
-      tmpCanvas.height = sh;
-      const tmpCtx = tmpCanvas.getContext('2d');
-      tmpCtx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);  // Draw the part of the image on the temp canvas
-      return tmpCanvas.toDataURL('image/png');  // Return the cropped image as Data URL
-    }
+		downloadZipBtn.addEventListener('click', () => {
+			const zip = new JSZip();
+			output.innerHTML = '';
 
-    function updateSplitValues() {
-        const finalWidth = parseInt(finalWidthInput.value);
-        if (!isNaN(finalWidth)) {
-            const columnWidths = [leftWidth, middleWidth, rightWidth]
-            const totalOriginalWidth = columnWidths.reduce((a, b) => a + b, 0);
-            const newWidths = columnWidths.map(width => Math.round((width / totalOriginalWidth) * finalWidth));
+			const yLines = [0, ...horizontalSplits, canvas.height];
+			for (let i = 0; i < yLines.length - 1; i++) {
+				const top = yLines[i];
+				const bottom = yLines[i + 1];
+				const key = `${top}_${bottom}`;
+				const xLines = [0, ...(verticalSplitsByZone[key] || []), canvas.width];
 
-            const valuesStr = newWidths.join(', ');
+				for (let j = 0; j < xLines.length - 1; j++) {
+					const left = xLines[j];
+					const right = xLines[j + 1];
+					const w = right - left;
+					const h = bottom - top;
 
-            // Display the resized widths on the screen
-            calculatedWidths.innerHTML = `
-            <p>Final Width: ${finalWidth}</p>
-            <p>Calculated Column Widths:</p>
-            <ul>
-                <li>r2c1: ${newWidths[0]}</li>
-                <li>r2c2: ${newWidths[1]}</li>
-                <li>r2c3: ${newWidths[2]}</li>
-            </ul>
-            <br>
-            <button id="copyProportions">Copy Values</button>
-            `;
+					const dataUrl = cropImageToDataURL(left, top, w, h);
+					const base64 = dataUrl.split(',')[1];
+					const name = `zone${i + 1}_chunk${j + 1}.png`;
 
-            document.getElementById('copyProportions').addEventListener('click', () => {
-            navigator.clipboard.writeText(valuesStr)
-                .then(() => {
-                    document.getElementById('copyNotice').textContent = 'Copied!';
-                })
-                .catch(err => {
-                    document.getElementById('copyNotice').textContent = 'Failed to copy.';
-                });
-        });
-        }
-    }
-    
-    function splitImage() {
-      output.innerHTML = '';  // Clear the output div
-      zipImages = [];  // Reset the zipImages array
-      downloadZipBtn.style.display = 'none';  // Hide the download button until we generate the zip
+					zip.file(name, base64, { base64: true });
 
-      const [x1, y1] = [Math.min(startX, endX), Math.min(startY, endY)];
-      const [x2, y2] = [Math.max(startX, endX), Math.max(startY, endY)];
+					const imgEl = document.createElement('img');
+					imgEl.src = dataUrl;
+					output.appendChild(imgEl);
+				}
+			}
 
-      const topHeight = y1;
-      const middleHeight = y2 - y1;
-      const bottomHeight = canvas.height - y2;
+			zip.generateAsync({ type: 'blob' }).then(content => {
+				const link = document.createElement('a');
+				link.href = URL.createObjectURL(content);
+				link.download = 'image_chunks.zip';
+				link.click();
+			});
+		});
 
-      leftWidth = x1;
-      middleWidth = x2 - x1;
-      rightWidth = canvas.width - x2;
+		function updateAllProportions() {
+		const scaleInput = document.getElementById('scaleWidth');
+		const outputDiv = document.getElementById('proportionalOutput');
+		const finalWidth = parseInt(scaleInput.value);
+		outputDiv.innerHTML = '';
 
-      updateSplitValues();
+		if (isNaN(finalWidth)) {
+				outputDiv.innerHTML = '<p>Please enter a valid final width.</p>';
+				return;
+		}
 
-      const parts = [
-        { name: 'r1.png', x: 0, y: 0, w: canvas.width, h: topHeight },
-        { name: 'r2c1.png', x: 0, y: y1, w: leftWidth, h: middleHeight },
-        { name: 'r2c2.png', x: x1, y: y1, w: middleWidth, h: middleHeight },
-        { name: 'r2c3.png', x: x2, y: y1, w: rightWidth, h: middleHeight },
-        { name: 'r3.png', x: 0, y: y2, w: canvas.width, h: bottomHeight }
-      ];
+		if (!img || img.width === 0) {
+				outputDiv.innerHTML = '<p>Please upload an image first.</p>';
+				return;
+		}
 
-      parts.forEach(part => {
-        const dataUrl = cropImageToDataURL(part.x, part.y, part.w, part.h);
-        zipImages.push({ name: part.name, data: dataUrl });
+		const scale = finalWidth / img.width;
 
-        const imgEl = document.createElement('img');
-        imgEl.src = dataUrl;
-        imgEl.style.maxWidth = '100px';
+		horizontalSplits.sort((a, b) => a - b);
+		const zones = [];
 
-        // Left-click: download
-        imgEl.addEventListener('click', () => {
-          // const link = document.createElement('a');
-          // link.href = dataUrl;
-          // link.download = part.name;
-          // link.click();
-          img.onload = () => {
-            canvas.width = img.width;
-            canvas.height = img.height;
-            ctx.drawImage(img, 0, 0);
-          };
-          img.src = dataUrl;
-        });
+	 
+		for (let i = 0; i <= horizontalSplits.length; i++) {
+		const yStart = i === 0 ? 0 : horizontalSplits[i - 1];
+		const yEnd = i === horizontalSplits.length ? img.height : horizontalSplits[i];
+		const key = `${yStart}_${yEnd}`;
+		const verticals = verticalSplitsByZone[key] || [];
 
-        // Right-click: set as new image (override context menu)
-        // imgEl.addEventListener('contextmenu', (e) => {
-        //   e.preventDefault(); // prevent default right-click menu
-        //   img.onload = () => {
-        //     canvas.width = img.width;
-        //     canvas.height = img.height;
-        //     ctx.drawImage(img, 0, 0);
-        //   };
-        //   img.src = dataUrl;
-        // });
+	 
+		const splits = [0, ...verticals.sort((a, b) => a - b), img.width];
+		const widths = [];
 
-        output.appendChild(imgEl);
-      });
+		for (let j = 0; j < splits.length - 1; j++) {
+				const originalWidth = splits[j + 1] - splits[j];
+				const scaled = Math.round(originalWidth * scale);
+				widths.push(scaled);
+		}
 
-      downloadZipBtn.style.display = 'inline-block';  // Show the download button after splitting
-    }
+		zones.push({
+				zoneIndex: `${i + 1}`,
+				scaledWidths: widths
+		});
+		}
 
-    downloadZipBtn.addEventListener('click', () => {
-      const zip = new JSZip();
-      zipImages.forEach(({ name, data }) => {
-        const base64 = data.split(',')[1];
-        zip.file(name, base64, { base64: true });
-      });
-
-      zip.generateAsync({ type: 'blob' }).then(content => {
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(content);
-        link.download = 'image_splits.zip';
-        link.click();
-      });
-    });
-  </script>
+	 
+		zones.forEach(zone => {
+				const title = `<p><strong>Zone ${zone.zoneIndex}</strong></p>`;
+				const list = zone.scaledWidths.map((w, i) => `<li>Chunk ${i + 1}: ${w}px</li>`).join('');
+				outputDiv.innerHTML += `${title}<ul>${list}</ul>`;
+		});
+		}
+	</script>
 </body>
 </html>
